@@ -4,6 +4,8 @@
 .gitconfig
 *.bak
 *.log
+files*
+*.jupterlab-workspace
 *~
 ~*
 _tmp*

@@ -1,10 +1,18 @@
 """
 """
-import sys, pickle
+import os,sys, pickle
 import numpy as np
 import pandas as pd
+from time import localtime, strftime
 from pathlib import Path
-from wtlike import FermiInterval
+from wtlike import FermiInterval, Timer
+
+# Set filepath to folder containing all the data
+# -- from $ANIMATION_FIlES if set, else local folder files 
+filepath = os.environ.get('ANIMATION_FILES', 'files')
+filepath = Path(filepath).expanduser()
+assert filepath.is_dir(), 'Expect either $ANIMATION_FILES  or files to be folder'
+
 
 def draw_map(mapper, time_range, name='', show_sun=False, sigma=0,
                 fig=None, figsize=(9,4), label='', fignum=1, **kwargs):
@@ -65,6 +73,9 @@ def draw_map(mapper, time_range, name='', show_sun=False, sigma=0,
 
 
 class Tranche:
+    """
+    Manage spitting an array into chunks
+    """
 
     def __init__(self, size, total):
         self.start = np.append(np.arange(0, total, size), total)
@@ -103,7 +114,7 @@ class ExposureRatio:
 class FluxDifference:
 
     def __init__(self,filename):
-        assert Path(filename).is_file()
+        assert Path(filename).is_file(), f'FluxDifference: {filename} is not a file.'
         with open(filename, 'rb') as inp:
             self.fdict = pickle.load(inp)
         self.average = self.fdict[0]
@@ -126,7 +137,7 @@ class FluxDifference:
 
 class FluxPlot:
     def __init__(self, fdict, **kwargs):
-        assert Path(fdict).is_file()
+        assert Path(fdict).is_file(), f'FluxPlot: {fdict} is not a file.'
         self.mapper = FluxDifference(fdict)
         self.kw = dict(colorbar=False,  grid_color='0.25', vmin=1, vmax=10,)
         self.kw.update(kwargs)
@@ -160,21 +171,26 @@ class ExposurePlot:
 
 
 class PlottingJob:
+    """Manage creation of flux or exposure plots from corresponding maps
+    """
 
     def __init__(self, jobname, tranche_size=200, job_time='1:00:00'):
+
         self.jobname = jobname
         self.job_time = job_time
         kind=None
         for test in 'flux exposure'.split():
             if jobname.find(test)>=0: kind=test
-        if kind is None: raise Exception(f'Bad jobname: {jobname}')
-        p = Path('files') #weekly_expos
-        map_dict_file = sorted(list(Path('files').glob(f'weekly_{kind}*.pkl')))[-1]
+        if kind is None: raise Exception(f'Bad jobname: {jobname} -- expect "flux* or "exposure*')
+        t = sorted(list(filepath.glob(f'weekly_{kind}*.pkl')))
+        assert len(t)>0, f'No "weekly_{kind}*.pkl" files found in {filepath}.' 
+        map_dict_file = t[-1]
             
-        self.outpath = p/jobname
+        self.outpath = filepath/jobname
         self.outpath.mkdir(exist_ok=True)
         (self.outpath/'logs').mkdir(exist_ok=True)
         (self.outpath/'plots').mkdir(exist_ok=True)
+
         self.plotter = ExposurePlot(map_dict_file) if kind=='exposure' else FluxPlot(map_dict_file)
         self.tranche = Tranche(tranche_size, len(self.plotter))
   
@@ -182,8 +198,9 @@ class PlottingJob:
         return len(self.tranche)
 
     def __call__(self, tid):
-
-        for idx in self.tranche[tid-1]:
+        t = self.tranche[tid-1]
+        print(f'Making plots {t[0]} to {t[-1]}')
+        for idx in t:
             self.plot_week(idx+1)
 
     def plot_week(self, week):
@@ -197,7 +214,7 @@ class PlottingJob:
     def submit(self):
         from simple_slurm import Slurm
         myfile = Path(sys.argv[0]).stem
-        module = 'pylib.'+myfile
+        module = 'animation.'+myfile
         output=self.outpath/'logs/%A_%a.log'
         # print(f'log output to {output} ')
         print(f'Running module {module}')
@@ -211,4 +228,35 @@ class PlottingJob:
         jobid =  slurm.sbatch(f'python -m {module}')
         return jobid
 
-        
+def main():
+    """
+    Module execution, either online to submit or from Slurm to run task(s)
+    """
+    if len(sys.argv)==1:
+        # no args
+        jobname = os.getenv('SLURM_JOB_NAME', None)
+        jobid = os.getenv('SLURM_JOB_ID', 0)
+    else:
+        # with an arg, used as jobname?
+        jobname = sys.argv[1]
+        jobid = 0 
+
+    print (f'{strftime("%Y-%m-%d %H:%M:%S", localtime())}')
+    print(f"""name: {jobname}\njobid: {jobid}""")
+
+    job = PlottingJob(jobname)
+
+    if jobid==0:
+        # submit job(s)
+        jobid  = job.submit()
+        print(f'Submitted {jobname}:{jobid} with {len(job)} tasks')
+    else:
+        # called by Slurm -- get the task id.
+        task_id = int(os.environ.get('SLURM_ARRAY_TASK_ID', -1))
+        print(f'Start task {task_id}')
+        et = Timer()
+        job(int(task_id))
+        print(et)
+
+if __name__=='__main__':
+    main()
