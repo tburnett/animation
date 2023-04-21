@@ -86,7 +86,7 @@ class Tranche:
     def __len__(self): 
         return len(self.start)-1
 
-    def __repr___(self):
+    def __repr__(self):
         return f'Tranche(0, {self.start[-1]}, {self.start[1]})'
 
 def week_number(interval):
